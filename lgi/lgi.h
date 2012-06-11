@@ -18,6 +18,11 @@
 #define lua_objlen(L, p) lua_rawlen (L, p)
 #define lua_setfenv(L, p) lua_setuservalue (L, p)
 #define lua_getfenv(L, p) lua_getuservalue (L, p)
+#else
+#define lua_absindex(L, i) ((i < 0) ? lua_gettop (L) + i + 1 : i)
+#define lua_getuservalue(L, p) lua_getfenv (L, p)
+#define lua_setuservalue(L, p) lua_setfenv (L, p)
+#define luaL_setfuncs(L, regs) luaL_register (L, NULL, regs)
 #endif
 
 #include <glib.h>
