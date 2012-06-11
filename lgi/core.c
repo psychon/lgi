@@ -666,6 +666,7 @@ luaopen_lgi_corelgilua51 (lua_State* L)
   lgi_marshal_init (L);
   lgi_record_init (L);
   lgi_object_init (L);
+  lgi_compound_init (L);
   lgi_callable_init (L);
 
   /* Return registration table. */
