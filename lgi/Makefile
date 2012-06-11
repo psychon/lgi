@@ -23,7 +23,7 @@ LIBFLAG = -shared
 CCSHARED = -fPIC
 endif
 
-OBJS = buffer.o callable.o core.o gi.o marshal.o object.o record.o compound.o
+OBJS = buffer.o callable.o core.o gi.o marshal.o object.o record.o compound.o ctype.o
 
 COPTFLAGS = -Wall -Wextra -O2 -g
 CFLAGS = $(CCSHARED) $(COPTFLAGS) $(LUA_CFLAGS) $(shell pkg-config --cflags $(PKGS))

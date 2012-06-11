@@ -58,6 +58,7 @@ lgi_cache_create (lua_State *L, gpointer key, const char *mode);
 
 /* Initialization of modules. */
 void lgi_marshal_init (lua_State *L);
+void lgi_ctype_init (lua_State *L);
 void lgi_record_init (lua_State *L);
 void lgi_compound_init (lua_State *L);
 void lgi_object_init (lua_State *L);
@@ -204,6 +205,35 @@ lgi_compound_2lua (lua_State *L, int ntypetable, gpointer addr, int owned,
    typetable. */
 gpointer
 lgi_compound_2c (lua_State *L, int narg, int ntype);
+
+struct _LgiCTypeGuard;
+typedef struct _LgiCTypeGuard LgiCTypeGuard;
+
+/* Create CType guard, which is used to protect temporary values
+   during marshaling. */
+LgiCTypeGuard *
+lgi_ctype_guard_create (lua_State *L, int n_items);
+
+/* Commits all commitable items accumulated in the guard,
+   i.e. deactivates destroy notification for them. */
+void
+lgi_ctype_guard_commit (lua_State *L, LgiCTypeGuard *guard);
+
+/* Converts value from 'narg' stack position to Lua value which is
+   stored on the stack.  Type information is from table 'nti',
+   starting at position 'ntipos', which is updated to point beyond
+   this type description. */
+void
+lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
+	      int narg, gpointer target);
+
+/* Converts value from C to Lua value and stores it on the stack.
+   Type information is from table 'nti', starting at position
+   'ntipos', which is updated to point beyond this type
+   description. */
+void
+lgi_ctype_2lua (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
+		int parent, gpointer source);
 
 #if !GLIB_CHECK_VERSION(2, 30, 0)
 /* Workaround for broken g_struct_info_get_size() for GValue, see
