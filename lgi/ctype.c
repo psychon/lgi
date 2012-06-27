@@ -50,15 +50,9 @@ enum {
   CTYPE_VARIANT_ARRAY_ARRAY     = 0x00,
   CTYPE_VARIANT_ARRAY_PTRARRAY  = 0x10,
   CTYPE_VARIANT_ARRAY_BYTEARRAY = 0x20,
+  CTYPE_VARIANT_ARRAY_FIXEDC    = 0x30,
   CTYPE_VARIANT_LIST_SLIST      = 0x00,
   CTYPE_VARIANT_LIST_LIST       = 0x10,
-
-  CTYPE_NARG_INDEX    = 0x3e00,
-  CTYPE_NARG_DIR      = 0xc000,
-  CTYPE_NARG_RETURN   = 0x0000,
-  CTYPE_NARG_IN       = 0x4000,
-  CTYPE_NARG_OUT      = 0x8000,
-  CTYPE_NARG_INOUT    = 0xc000,
 };
 
 /* Very similar to GIArgument, but contains also ffi_arg and ffi_sarg
@@ -86,7 +80,7 @@ typedef union _CTypeValue
    NULL, assumes that 'bad type' error is requested, otherwise detail
    part is fromatted using 'extra'. */
 static int
-ctype_error (lua_State *L, int nti, int *ntipos, int narg,
+ctype_error (lua_State *L, int nti, int ntipos, int dir, int narg,
 	     const char *extra, ...)
 {
   int level, args = 3;
@@ -95,8 +89,7 @@ ctype_error (lua_State *L, int nti, int *ntipos, int narg,
   luaL_checkstack (L, 3, NULL);
   narg = lua_absindex (L, narg);
   nti = lua_absindex (L, nti);
-  lua_pushlightuserdata (L, &ctype_api);
-  lua_rawget (L, LUA_REGISTRYINDEX);
+  lua_rawgetp (L, LUA_REGISTRYINDEX, &ctype_api);
 
   /* Increase context.level, in order to skip this C-frame. */
   lua_getfield (L, -1, "context");
@@ -109,7 +102,8 @@ ctype_error (lua_State *L, int nti, int *ntipos, int narg,
   /* Invoke method from 'type' table with proper arguments. */
   lua_getfield (L, -1, "error");
   lua_pushvalue (L, nti);
-  lua_pushnumber (L, *ntipos);
+  lua_pushnumber (L, ntipos);
+  lua_pushnumber (L, dir);
   lua_pushnumber (L, narg);
   if (extra != NULL)
     {
@@ -221,8 +215,7 @@ lgi_ctype_guard_create (lua_State *L, int n_items)
       guard->n_items = 0;
       guard->items_alloced = n_items;
       memset (guard->items, 0, sizeof (GuardItem) * n_items);
-      lua_pushlightuserdata (L, &guard_mt);
-      lua_rawget (L, LUA_REGISTRYINDEX);
+      lua_rawgetp (L, LUA_REGISTRYINDEX, &guard_mt);
       lua_setmetatable (L, -2);
     }
 
@@ -287,10 +280,11 @@ ctype_guard_add (lua_State *L, LgiCTypeGuard *guard, GuardItemType type,
 }
 
 void
-lgi_ctype_query (lua_State *L, guint ctype, int nti, int *ntipos,
+lgi_ctype_query (lua_State *L, int nti, int *ntipos,
 		 gsize *size, gsize *align)
 {
-  guint variant;
+  guint ctype, variant;
+  gboolean is_pointer;
 
 #define GET_INFO(type)						\
   do {								\
@@ -301,19 +295,18 @@ lgi_ctype_query (lua_State *L, guint ctype, int nti, int *ntipos,
   } while (0)
 
 
-  if ((ctype & CTYPE_POINTER) != 0)
-    /* Pointers to anything have always the same size and
-       alignment. */
-    GET_INFO (gpointer);
-
-  variant = ctype & CTYPE_VARIANT;
-
-  *size = 0;
-  *align = 0;
+  *size = *align = 0;
   luaL_checkstack (L, 3, NULL);
+  lua_rawgeti (L, nti, (*ntipos)++);
+  ctype = lua_tonumber (L, -1);
+  lua_pop (L, 1);
+  variant = ctype & CTYPE_VARIANT;
+  is_pointer = (ctype & CTYPE_POINTER) != 0;
   switch (ctype & CTYPE_BASE)
     {
     case CTYPE_BASE_VOID:
+      if (is_pointer)
+	GET_INFO (gpointer);
       return;
 
     case CTYPE_BASE_BOOLEAN:
@@ -347,8 +340,12 @@ lgi_ctype_query (lua_State *L, guint ctype, int nti, int *ntipos,
 
     case CTYPE_BASE_COMPOUND:
       {
+	int pos = (*ntipos)++;
+	if (is_pointer)
+	  GET_INFO (gpointer);
+
 	/* Get information from the typetable. */
-	lua_rawgeti (L, nti, *ntipos + 1);
+	lua_rawgeti (L, nti, pos);
 	lua_getfield (L, -1, "_size");
 	*size = lua_tonumber (L, -1);
 	lua_getfield (L, -2, "_align");
@@ -360,34 +357,54 @@ lgi_ctype_query (lua_State *L, guint ctype, int nti, int *ntipos,
     case CTYPE_BASE_ENUM:
       {
 	/* Get type from the typetable and query base ctype from it. */
-	lua_rawgeti (L, nti, *ntipos + 1);
+	int pos = 1;
+	lua_rawgeti (L, nti, (*ntipos)++);
 	lua_getfield (L, -1, "_type");
-	lgi_ctype_query (L, lua_tonumber (L, -1), nti, ntipos, size, align);
+	lgi_ctype_query (L, -1, &pos, size, align);
 	lua_pop (L, 2);
 	return;
       }
 
-      /* Following collections should have been covered by
-	 CTYPE_POINTER case above. */
     case CTYPE_BASE_ARRAY:
     case CTYPE_BASE_LIST:
     case CTYPE_BASE_HASH:
+      /* Skip the information about argument. */
+      {
+	int i;
+	for (i = (ctype & CTYPE_BASE) == CTYPE_BASE_HASH ? 2 : 1; i != 0; i--)
+	  lgi_ctype_query (L, nti, ntipos, size, align);
+	GET_INFO (gpointer);
+      }
 
-      /* Complex types, do not supported by this simple minded
-	 method. */
     case CTYPE_BASE_CARRAY:
+      if (is_pointer)
+	GET_INFO (gpointer);
+      else
+	{
+	  /* Fixed-size C array case. */
+	  int count;
+	  lua_rawgeti (L, nti, (*ntipos)++);
+	  count = lua_tonumber (L, -1);
+	  lua_pop (L, 1);
+	  lgi_ctype_query (L, nti, ntipos, size, align);
+	  *size *= count;
+	  return;
+	}
+
     case CTYPE_BASE_CALLABLE:
     default:
       luaL_error (L, "bad typeinfo");
     }
+
+#undef GET_INFO
 }
 
 static gboolean
-ctype_2c_int (lua_State *L, guint ctype, int nti, int *ntipos, int ntiarg,
-	      int narg, CTypeValue *v)
+ctype_2c_int (lua_State *L, guint ctype, int nti, int ntipos, int dir,
+	      int ntiarg, int narg, CTypeValue *v)
 {
   gboolean is_pointer = (ctype & CTYPE_POINTER) != 0;
-  gboolean is_return = (ctype & CTYPE_NARG_DIR) == CTYPE_NARG_RETURN;
+  gboolean is_return = (dir == 0);
 
   if (!lua_isnumber (L, narg))
     return FALSE;
@@ -400,7 +417,7 @@ ctype_2c_int (lua_State *L, guint ctype, int nti, int *ntipos, int ntiarg,
 	{								\
 	  lua_Number val = lua_tonumber (L, narg);			\
 	  if (G_UNLIKELY (val < val_min || val > val_max))		\
-	    ctype_error (L, nti, ntipos, ntiarg,			\
+	    ctype_error (L, nti, ntipos, dir, ntiarg,			\
 			 "%f is out of <%f, %f>",			\
 			 val, val_min, val_max);			\
 	  if (G_UNLIKELY (sizeof (v->v_ ## tfield) <= sizeof (gint32))	\
@@ -438,17 +455,15 @@ ctype_2c_int (lua_State *L, guint ctype, int nti, int *ntipos, int ntiarg,
 #undef HANDLE_INT
     }
 
-  /* Skip the typeinfo, always contains inly single byte. */
-  (*ntipos)++;
   return TRUE;
 }
 
 static void
-ctype_2lua_int (lua_State *L, guint ctype, int *ntipos, CTypeValue *v)
+ctype_2lua_int (lua_State *L, guint ctype, int dir, CTypeValue *v)
 {
   lua_Number val;
   gboolean is_pointer = (ctype & CTYPE_POINTER) != 0;
-  gboolean is_return = (ctype & CTYPE_NARG_DIR) == CTYPE_NARG_RETURN;
+  gboolean is_return = (dir == 0);
 
   switch (ctype & (CTYPE_BASE | CTYPE_VARIANT))
     {
@@ -480,13 +495,10 @@ ctype_2lua_int (lua_State *L, guint ctype, int *ntipos, CTypeValue *v)
     default:
       g_assert_not_reached ();
     }
-
-  /* Skip the typeinfo, always contains only single byte. */
-  (*ntipos)++;
 }
 
 static gboolean
-ctype_2c_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
+ctype_2c_string (lua_State *L, LgiCTypeGuard *guard, guint ctype,
 		 int narg, CTypeValue *val)
 {
   if (lua_isnoneornil (L, narg))
@@ -494,7 +506,6 @@ ctype_2c_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
       if ((ctype & CTYPE_OPTIONAL) != 0)
 	{
 	  val->v_pointer = NULL;
-	  (*ntipos)++;
 	  return TRUE;
 	}
     }
@@ -519,7 +530,6 @@ ctype_2c_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
 			   str);
 	}
       val->v_pointer = str;
-      (*ntipos)++;
       return TRUE;
     }
 
@@ -527,7 +537,7 @@ ctype_2c_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
 }
 
 static void
-ctype_2lua_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
+ctype_2lua_string (lua_State *L, LgiCTypeGuard *guard, guint ctype,
 		   CTypeValue *val)
 {
   char *str = val->v_pointer;
@@ -545,19 +555,19 @@ ctype_2lua_string (lua_State *L, LgiCTypeGuard *guard, guint ctype, int *ntipos,
     ctype_guard_add (L, guard, GUARD_TYPE_FREE, GUARD_SCOPE_COMMIT, str);
 
   /* Finally, store the string to the Lua stack. */
-  (*ntipos)++;
   lua_pushstring (L, str);
 }
 
 static gboolean
-ctype_2c_enum (lua_State *L, int nti, int *ntipos, int narg, CTypeValue *v)
+ctype_2c_enum (lua_State *L, int nti, int ntipos, int dir,
+	       int narg, CTypeValue *v)
 {
   guint ctype;
   lua_Number num;
   gboolean ok;
 
   /* Get the enum typetable. */
-  lua_rawgeti (L, nti, *ntipos + 1);
+  lua_rawgeti (L, nti, ntipos + 1);
   if (lua_type (L, narg) == LUA_TNUMBER)
     num = lua_tonumber (L, narg);
   else
@@ -578,50 +588,40 @@ ctype_2c_enum (lua_State *L, int nti, int *ntipos, int narg, CTypeValue *v)
 
   /* Get number from Lua. */
   lua_pushnumber (L, num);
-  ok = ctype_2c_int (L, ctype, nti, ntipos, narg, -1, v);
+  ok = ctype_2c_int (L, ctype, nti, ntipos, dir, narg, -1, v);
   lua_pop (L, 1);
-  if (!ok)
-    return FALSE;
-
-  /* One increment is already done by ctype_2c_int, skip also table
-     argument. */
-  (*ntipos)++;
-  return TRUE;
+  return ok;
 }
 
 static void
-ctype_2lua_enum (lua_State *L, int nti, int *ntipos, CTypeValue *v)
+ctype_2lua_enum (lua_State *L, int nti, int ntipos, int dir, CTypeValue *v)
 {
   guint ctype;
 
   /* Get the enum typetable. */
-  lua_rawgeti (L, nti, *ntipos + 1);
+  lua_rawgeti (L, nti, ntipos + 1);
 
   /* Get the ctype fromat from the table and retrieve number from
      source */
   lua_getfield (L, -1, "_type");
   ctype = lua_tonumber (L, -1);
   lua_pop (L, 1);
-  ctype_2lua_int (L, ctype, ntipos, v);
+  ctype_2lua_int (L, ctype, dir, v);
 
   /* Convert number on the stack to symbolic value. Then remove enum
      table from the stack. */
   lua_gettable (L, -2);
   lua_remove (L, -2);
-
-  /* One increment is already done by ctype_2lua_int, skip also table
-     argument. */
-  (*ntipos)++;
 }
 
 static gboolean
 ctype_2c_compound (lua_State *L, LgiCTypeGuard *guard,
-		   guint ctype, int nti, int *ntipos,
-		   int narg, gpointer target)
+		   guint ctype, int nti, int ntipos,
+		   int dir, int narg, gpointer target)
 {
   int size = 0;
   CTypeValue *v = NULL;
-  lua_rawgeti (L, nti, *ntipos + 1);
+  lua_rawgeti (L, nti, ntipos + 1);
   if (G_UNLIKELY (ctype && CTYPE_POINTER) != 0)
     {
       /* Get size of the structure if it is not passed by pointer. */
@@ -629,7 +629,7 @@ ctype_2c_compound (lua_State *L, LgiCTypeGuard *guard,
       size = lua_tonumber (L, -1);
       lua_pop (L, 1);
       if (G_UNLIKELY (size == 0))
-	ctype_error (L, nti, ntipos, narg, "cannot make copy");
+	ctype_error (L, nti, ntipos, dir, narg, "cannot make copy");
     }
   else
     /* Remember pointer to store address to. */
@@ -670,7 +670,7 @@ ctype_2c_compound (lua_State *L, LgiCTypeGuard *guard,
 	      /* Remove ownership from the object, because ownership
 		 is transferred. */
 	      if (G_UNLIKELY (!lgi_compound_own (L, narg, -1)))
-		ctype_error (L, nti, ntipos, narg,
+		ctype_error (L, nti, ntipos, dir, narg,
 			     "cannot transfer ownership");
 
 	      /* Add guard on rollback which readds compound's
@@ -681,13 +681,12 @@ ctype_2c_compound (lua_State *L, LgiCTypeGuard *guard,
 	}
     }
 
-  *ntipos += 2;
   return TRUE;
 }
 
 static void
 ctype_2lua_compound (lua_State *L, LgiCTypeGuard *guard, guint ctype,
-		     int nti, int *ntipos, int parent, gpointer src)
+		     int nti, int ntipos, int parent, gpointer src)
 {
   if (src == NULL)
     /* NULL is translated as nil. */
@@ -702,7 +701,7 @@ ctype_2lua_compound (lua_State *L, LgiCTypeGuard *guard, guint ctype,
 	src = ((CTypeValue *) src)->v_pointer;
 
       /* Get the typetable and convert pointer to the compound object. */
-      lua_rawgeti (L, nti, *ntipos + 1);
+      lua_rawgeti (L, nti, ntipos + 1);
       lgi_compound_2lua (L, -1, src, transfer, parent);
       lua_remove (L, -2);
       lua_remove (L, -2);
@@ -713,16 +712,106 @@ ctype_2lua_compound (lua_State *L, LgiCTypeGuard *guard, guint ctype,
 	ctype_guard_add (L, guard, GUARD_TYPE_COMPOUND_UNOWN,
 			 GUARD_SCOPE_ROLLBACK, src);
     }
+}
 
-  *ntipos += 2;
+/* Advances *ntipos to element type, calculates element size and
+   element count for array marshaling.  Sets up ntipos to the position
+   of the argument type. */
+static void
+ctype_2c_array_info (lua_State *L, int ctype,
+		     int nti, int *ntipos, int *endpos, int dir,
+		     int narg, gsize *size, int *count)
+{
+  gsize unused;
+  int ltype, sourcecount, basepos = (*ntipos);
+
+  /* Parse and skip fixed-size indicator if present. */
+  *count = 0;
+  (*ntipos)++;
+  if ((ctype & CTYPE_VARIANT) == CTYPE_VARIANT_ARRAY_FIXEDC)
+    {
+      lua_rawgeti (L, nti, (*ntipos)++);
+      *count = lua_tonumber (L, -1);
+      lua_pop (L, 1);
+    }
+
+  /* Get element size. */
+  *endpos = *ntipos;
+  lgi_ctype_query (L, nti, endpos, size, &unused);
+
+  /* Check the type of argument. */
+  ltype = lua_type (L, narg);
+  if (ltype == LUA_TTABLE)
+    sourcecount = luaL_len (L, narg);
+  else if (*size == 1 && (ltype == LUA_TSTRING
+			  || luaL_testudata (L, narg, LGI_BYTES_BUFFER)))
+    sourcecount = luaL_len (L, narg);
+  else
+    /* Signalize an error, source argument is not suitable. */
+    ctype_error (L, nti, basepos, dir, narg, NULL);
+
+  if (*count == 0)
+    *count = sourcecount;
+  else if (*count < sourcecount)
+    ctype_error (L, nti, basepos, dir, narg,
+		 "expecting array size %d, got %d",
+		 (int) *count, (int) sourcecount);
+}
+
+static void
+ctype_2c_flatarray (lua_State *L, LgiCTypeGuard *guard,
+		    int nti, int ntipos, int dir, int narg, int parent,
+		    gpointer array, gsize eltsize, int count)
+{
+  int pos, ltype = lua_type (L, narg), i;
+  char *dest;
+
+  /* Handle special case of accepting strings and byte arrays for
+     arrays with eltsize==1. */
+  if (eltsize == 1)
+    {
+      /* It is possible to accept string or byte buffers as source for
+	 1byte-elements arrays. */
+      gpointer src = (ltype == LUA_TSTRING)
+	? (gpointer) lua_tostring (L, narg)
+	: luaL_testudata (L, narg, LGI_BYTES_BUFFER);
+      if (src != NULL)
+	{
+	  memcpy (array, src, count);
+	  return;
+	}
+    }
+
+  /* Otherwise go through the input table and marshal
+     element-by-element. */
+  dest = array;
+  for (i = 0; i < count; i++, dest += eltsize)
+    {
+      lua_pushnumber (L, i + 1);
+      lua_gettable (L, narg);
+      pos = ntipos;
+      lgi_ctype_2c (L, guard, nti, &pos, dir, parent, dest);
+      lua_pop (L, 1);
+    }
+}
+
+static gboolean
+ctype_2c_array (lua_State *L, LgiCTypeGuard *guard, guint ctype,
+		int nti, int ntipos, int dir, int narg, gpointer val)
+{
+  gsize size;
+  int endpos, count;
+  ctype_2c_array_info (L, ctype, nti, &ntipos, &endpos, dir,
+		       narg, &size, &count);
+  return TRUE;
 }
 
 void
 lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
-	      int narg, gpointer target)
+	      int dir, int narg, gpointer target)
 {
   guint ctype;
-  int ltype;
+  int ltype, basepos = *ntipos;
   CTypeValue *val = target;
 
   luaL_checkstack (L, 3, NULL);
@@ -759,17 +848,15 @@ lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
 		}
 	    }
 	}
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_BOOLEAN:
       val->v_boolean = lua_toboolean (L, narg);
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_INT:
     case CTYPE_BASE_UINT:
-      if (ctype_2c_int (L, ctype, nti, ntipos, narg, narg, target))
+      if (ctype_2c_int (L, ctype, nti, basepos, dir, narg, narg, target))
 	return;
       break;
 
@@ -782,7 +869,6 @@ lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
 	  else
 	    val->v_float = n;
 
-	  (*ntipos)++;
 	  return;
 	}
       break;
@@ -802,27 +888,39 @@ lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
 	  val->v_gtype = g_type_from_name (lua_tostring (L, narg));
 	  if (narg == -1)
 	    lua_pop (L, 1);
-	  (*ntipos)++;
 	  return;
 	}
       break;
 
     case CTYPE_BASE_STRING:
-      if (ctype_2c_string (L, guard, ctype, ntipos, narg, val))
+      if (ctype_2c_string (L, guard, ctype, narg, val))
 	return;
       break;
 
     case CTYPE_BASE_ENUM:
-      if (ctype_2c_enum (L, nti, ntipos, narg, val))
-	return;
+      if (ctype_2c_enum (L, nti, basepos, dir, narg, val))
+	{
+	  (*ntipos)++;
+	  return;
+	}
       break;
 
     case CTYPE_BASE_COMPOUND:
-      if (ctype_2c_compound (L, guard, ctype, nti, ntipos, narg, val))
-	return;
+      if (ctype_2c_compound (L, guard, ctype, nti, basepos, dir, narg, val))
+	{
+	  (*ntipos)++;
+	  return;
+	}
       break;
 
     case CTYPE_BASE_ARRAY:
+      if (ctype_2c_array (L, guard, ctype, nti, basepos, dir, narg, val))
+	{
+	  (*ntipos)++;
+	  return;
+	}
+      break;
+
     case CTYPE_BASE_LIST:
     case CTYPE_BASE_HASH:
 
@@ -832,15 +930,16 @@ lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
     }
 
   /* Failure, report error properly. */
-  ctype_error (L, nti, ntipos, narg, NULL);
+  ctype_error (L, nti, basepos, dir, narg, NULL);
 }
 
 void
 lgi_ctype_2lua (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
-		int parent, gpointer source)
+		int dir, int parent, gpointer source)
 {
   guint ctype;
   CTypeValue *val = source;
+  int basepos = *ntipos;
 
   luaL_checkstack (L, 3, NULL);
   nti = lua_absindex (L, nti);
@@ -855,40 +954,38 @@ lgi_ctype_2lua (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
     case CTYPE_BASE_VOID:
       if ((ctype & CTYPE_POINTER) != 0)
 	lua_pushlightuserdata (L, val->v_pointer);
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_BOOLEAN:
       lua_pushboolean (L, val->v_boolean);
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_INT:
     case CTYPE_BASE_UINT:
-      ctype_2lua_int (L, ctype, ntipos, source);
+      ctype_2lua_int (L, ctype, dir, source);
       return;
 
     case CTYPE_BASE_FLOAT:
       lua_pushnumber (L, (ctype & CTYPE_VARIANT) != 0
 		      ? val->v_double : val->v_float);
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_GTYPE:
       lua_pushstring (L, g_type_name (val->v_gtype));
-      (*ntipos)++;
       return;
 
     case CTYPE_BASE_STRING:
-      ctype_2lua_string (L, guard, ctype, ntipos, source);
+      ctype_2lua_string (L, guard, ctype, source);
       return;
 
     case CTYPE_BASE_ENUM:
-      ctype_2lua_enum (L, nti, ntipos, source);
+      ctype_2lua_enum (L, nti, basepos, dir, source);
+      (*ntipos)++;
       return;
 
     case CTYPE_BASE_COMPOUND:
-      ctype_2lua_compound (L, guard, ctype, nti, ntipos, parent, source);
+      ctype_2lua_compound (L, guard, ctype, nti, basepos, parent, source);
+      (*ntipos)++;
       return;
 
     case CTYPE_BASE_ARRAY:
@@ -909,11 +1006,10 @@ void
 lgi_ctype_init (lua_State *L)
 {
   /* Register guard metatable. */
-  lua_pushlightuserdata (L, &guard_mt);
   lua_newtable (L);
   lua_pushcfunction (L, ctype_guard_gc);
   lua_setfield (L, -2, "__gc");
-  lua_rawset (L, LUA_REGISTRYINDEX);
+  lua_rawsetp (L, LUA_REGISTRYINDEX, &guard_mt);
 
   /* Create 'type' API table in main core API table. */
   lua_newtable (L);

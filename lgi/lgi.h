@@ -1,9 +1,9 @@
 /*
  * Dynamic Lua binding to GObject using dynamic gobject-introspection.
  *
- * Author: Pavel Holejsovsky (pavel.holejsovsky@gmail.com)
- *
- * License: MIT.
+ * Copyright (c) 2010,2011,2012 Pavel Holejsovsky
+ * Licensed under the MIT license:
+ * http://www.opensource.org/licenses/mit-license.php
  */
 
 #define G_LOG_DOMAIN "Lgi"
@@ -23,6 +23,21 @@
 #define lua_getuservalue(L, p) lua_getfenv (L, p)
 #define lua_setuservalue(L, p) lua_setfenv (L, p)
 #define luaL_setfuncs(L, regs) luaL_register (L, NULL, regs)
+#define luaL_len(L, p) lua_objlen (L, p)
+#define luaL_testudata(L, p, n) lgi_udata_test (L, p, n)
+#define lua_rawsetp(L, index, p)		\
+  do {						\
+  int i = lua_absindex (L, index);		\
+  lua_pushlightuserdata (L, p);			\
+  lua_insert (L, -2);				\
+  lua_rawset (L, i);				\
+  } while (0)
+#define lua_rawgetp(L, index, p)		\
+  do {						\
+  int i = lua_absindex (L, index);		\
+  lua_pushlightuserdata (L, p);			\
+  lua_rawget (L, i);				\
+  } while (0)
 #endif
 
 #include <glib.h>
@@ -219,21 +234,25 @@ lgi_ctype_guard_create (lua_State *L, int n_items);
 void
 lgi_ctype_guard_commit (lua_State *L, LgiCTypeGuard *guard);
 
+/* Queries size and alignment of given type, advances *ntipos after
+   the type definition. */
+void
+lgi_ctype_query (lua_State *L, int nti, int *ntipos,
+		 gsize *size, gsize *align);
+
 /* Converts value from 'narg' stack position to Lua value which is
    stored on the stack.  Type information is from table 'nti',
-   starting at position 'ntipos', which is updated to point beyond
-   this type description. */
+   starting at position 'ntipos'. */
 void
 lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
-	      int narg, gpointer target);
+	      int dir, int narg, gpointer target);
 
 /* Converts value from C to Lua value and stores it on the stack.
    Type information is from table 'nti', starting at position
-   'ntipos', which is updated to point beyond this type
-   description. */
+   'ntipos'. */
 void
 lgi_ctype_2lua (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
-		int parent, gpointer source);
+		int dir, int parent, gpointer source);
 
 #if !GLIB_CHECK_VERSION(2, 30, 0)
 /* Workaround for broken g_struct_info_get_size() for GValue, see
