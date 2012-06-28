@@ -127,6 +127,9 @@ typedef enum _GuardItemType {
   GUARD_TYPE_FREE,
   GUARD_TYPE_COMPOUND_OWN,
   GUARD_TYPE_COMPOUND_UNOWN,
+  GUARD_TYPE_GARRAY,
+  GUARD_TYPE_GPTRARRAY,
+  GUARD_TYPE_GBYTEARRAY
 } GuardItemType;
 
 typedef void (*CTypeDestroyNotify)(lua_State *L, gpointer user_data);
@@ -152,14 +155,38 @@ ctype_destroy_compound_unown (lua_State *L, gpointer user_data)
   lua_pop (L, 1);
 }
 
+static void
+ctype_destroy_garray (lua_State *L, gpointer user_data)
+{
+  (void) L;
+  g_array_unref (user_data);
+}
+
+static void
+ctype_destroy_gptrarray (lua_State *L, gpointer user_data)
+{
+  (void) L;
+  g_ptr_array_unref (user_data);
+}
+
+static void
+ctype_destroy_gbytearray (lua_State *L, gpointer user_data)
+{
+  (void) L;
+  g_byte_array_unref (user_data);
+}
+
 static const CTypeDestroyNotify guard_destroy[] = {
   ctype_destroy_free, /* GUARD_TYPE_FREE */
   ctype_destroy_compound_own, /* GUARD_TYPE_COMPOUND_OWN */
-  ctype_destroy_compound_unown /* GUARD_TYPE_COMPOUND_UNOWN */
+  ctype_destroy_compound_unown, /* GUARD_TYPE_COMPOUND_UNOWN */
+  ctype_destroy_garray, /* GUARD_TYPE_GARRAY */
+  ctype_destroy_gptrarray, /* GUARD_TYPE_GPTRARRAY */
+  ctype_destroy_gbytearray /* GUARD_TYPE_GBYTEARRAY */
 };
 
 typedef struct _GuardItem {
-  guint type : 14;
+  guint type : 6;
   guint destroy_on_commit : 1;
   guint destroy_on_gc : 1;
   gpointer user_data;
@@ -741,6 +768,9 @@ ctype_2c_array_info (lua_State *L, int ctype,
 
   /* Check the type of argument. */
   ltype = lua_type (L, narg);
+  if ((ltype == LUA_TNIL || ltype == LUA_TNONE)
+      && (ctype & CTYPE_OPTIONAL) != 0)
+    return;
   if (ltype == LUA_TTABLE)
     sourcecount = luaL_len (L, narg);
   else if (*size == 1 && (ltype == LUA_TSTRING
@@ -760,7 +790,7 @@ ctype_2c_array_info (lua_State *L, int ctype,
 
 static void
 ctype_2c_flatarray (lua_State *L, LgiCTypeGuard *guard,
-		    int nti, int ntipos, int dir, int narg, int parent,
+		    int nti, int ntipos, int dir, int narg,
 		    gpointer array, gsize eltsize, int count)
 {
   int pos, ltype = lua_type (L, narg), i;
@@ -790,20 +820,188 @@ ctype_2c_flatarray (lua_State *L, LgiCTypeGuard *guard,
       lua_pushnumber (L, i + 1);
       lua_gettable (L, narg);
       pos = ntipos;
-      lgi_ctype_2c (L, guard, nti, &pos, dir, parent, dest);
+      lgi_ctype_2c (L, guard, nti, &pos, dir, -1, dest);
       lua_pop (L, 1);
     }
 }
 
 static gboolean
 ctype_2c_array (lua_State *L, LgiCTypeGuard *guard, guint ctype,
-		int nti, int ntipos, int dir, int narg, gpointer val)
+		int nti, int *ntipos, int dir, int narg,
+		gpointer val)
 {
   gsize size;
   int endpos, count;
-  ctype_2c_array_info (L, ctype, nti, &ntipos, &endpos, dir,
+  gpointer raw_array;
+  GuardScope scope = (ctype & CTYPE_TRANSFER) != 0
+    ? GUARD_SCOPE_ROLLBACK : GUARD_SCOPE_BOTH;
+
+  /* Get information about the array (size, elementcount, type
+     description positions). */
+  ctype_2c_array_info (L, ctype, nti, ntipos, &endpos, dir,
 		       narg, &size, &count);
+
+  /* Check nil case. */
+  if (lua_isnoneornil (L, narg) && (ctype & CTYPE_OPTIONAL) != 0)
+    {
+      *(gpointer *) val = NULL;
+      *ntipos = endpos;
+      return TRUE;
+    }
+
+  /* Allocate the array, according to the type. */
+  switch (ctype & CTYPE_VARIANT)
+    {
+    case CTYPE_VARIANT_ARRAY_ARRAY:
+      {
+	GArray *array = g_array_sized_new (FALSE, TRUE, size, count);
+	raw_array = array->data;
+	ctype_guard_add (L, guard, GUARD_TYPE_GARRAY, scope, array);
+	*(gpointer *) val = array;
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_PTRARRAY:
+      {
+	GPtrArray *array = g_ptr_array_sized_new (count);
+	raw_array = array->pdata;
+	ctype_guard_add (L, guard, GUARD_TYPE_GPTRARRAY, scope, array);
+	*(gpointer *) val = array;
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_BYTEARRAY:
+      {
+	GByteArray *array = g_byte_array_sized_new (count);
+	raw_array = array->data;
+	ctype_guard_add (L, guard, GUARD_TYPE_GBYTEARRAY, scope, array);
+	*(gpointer *) val = array;
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_FIXEDC:
+      {
+	if (ctype & CTYPE_POINTER)
+	  {
+	    raw_array = g_malloc0_n (count, size);
+	    ctype_guard_add (L, guard, GUARD_TYPE_FREE, scope, raw_array);
+	    *(gpointer *) val = raw_array;
+	  }
+	else
+	  raw_array = val;
+	break;
+      }
+
+    default:
+      g_assert_not_reached ();
+    }
+
+  /* Marshal the contents of the array. */
+  ctype_2c_flatarray (L, guard, nti, *ntipos, dir,
+		      narg, raw_array, size, count);
+
+  /* Advance ntipos to the end of elementtype description. */
+  *ntipos = endpos;
   return TRUE;
+}
+
+static void
+ctype_2lua_array (lua_State *L, LgiCTypeGuard *guard, guint ctype,
+		  int nti, int *ntipos, gpointer src)
+{
+  gpointer rawarray;
+  int count, typepos;
+  gsize size, align;
+  gboolean transfer = (ctype & CTYPE_TRANSFER) != 0;
+
+  /* Convert NULL to nil. */
+  if (src == NULL)
+    {
+      lua_pushnil (L);
+      return;
+    }
+
+  /* Get pointer to raw array and count to marshal. */
+  (*ntipos)++;
+  switch (ctype & CTYPE_VARIANT)
+    {
+    case CTYPE_VARIANT_ARRAY_ARRAY:
+      {
+	GArray *array = src;
+	rawarray = array->data;
+	count = array->len;
+	if (transfer)
+	  ctype_guard_add (L, guard, GUARD_TYPE_GARRAY,
+			   GUARD_SCOPE_COMMIT, array);
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_PTRARRAY:
+      {
+	GPtrArray *array = src;
+	rawarray = array->pdata;
+	count = array->len;
+	if (transfer)
+	  ctype_guard_add (L, guard, GUARD_TYPE_GPTRARRAY,
+			   GUARD_SCOPE_COMMIT, array);
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_BYTEARRAY:
+      {
+	GByteArray *array = src;
+	rawarray = array->data;
+	count = array->len;
+	if (transfer)
+	  ctype_guard_add (L, guard, GUARD_TYPE_GBYTEARRAY,
+			   GUARD_SCOPE_COMMIT, array);
+	break;
+      }
+
+    case CTYPE_VARIANT_ARRAY_FIXEDC:
+      {
+	lua_rawgeti(L, nti, (*ntipos)++);
+	count = lua_tonumber (L, -1);
+	lua_pop (L, 1);
+	if (ctype & CTYPE_POINTER)
+	  {
+	    rawarray = *(gpointer *) src;
+	    if (transfer)
+	      ctype_guard_add (L, guard, GUARD_TYPE_FREE,
+			       GUARD_SCOPE_COMMIT, rawarray);
+	  }
+	else
+	  rawarray = src;
+	break;
+      }
+
+    default:
+      g_assert_not_reached ();
+    }
+
+  /* Query the type to get element size and endpos. */
+  typepos = *ntipos;
+  lgi_ctype_query (L, nti, ntipos, &size, &align);
+
+  if (size == 1)
+    {
+      /* Marshal byte-sized units into bytes.buffer. */
+      memcpy (lua_newuserdata (L, count), data, count);
+      luaL_getmetatable (L, LGI_BYTES_BUFFER);
+      lua_setmetatable (L, -2);
+    }
+  else
+    {
+      int i;
+      lua_createtable (L, count, 0);
+      char *source = rawarray;
+      for (i = 0; i < count; i++, source += size)
+	{
+	  *ntipos = typepos;
+	  lgi_ctype_2lua (L, guard, nti, ntipos, dir, narg, source);
+	  lua_rawseti (L, -2, i + 1);
+	}
+    }
 }
 
 void
@@ -914,11 +1112,9 @@ lgi_ctype_2c (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
       break;
 
     case CTYPE_BASE_ARRAY:
-      if (ctype_2c_array (L, guard, ctype, nti, basepos, dir, narg, val))
-	{
-	  (*ntipos)++;
+      *ntipos = basepos;
+      if (ctype_2c_array (L, guard, ctype, nti, ntipos, dir, narg, val))
 	  return;
-	}
       break;
 
     case CTYPE_BASE_LIST:
@@ -989,6 +1185,10 @@ lgi_ctype_2lua (lua_State *L, LgiCTypeGuard *guard, int nti, int *ntipos,
       return;
 
     case CTYPE_BASE_ARRAY:
+      ctype_2lua_array (L, guard, ctype, nti, &basepos, source);
+      *ntipos = basepos;
+      return;
+
     case CTYPE_BASE_LIST:
     case CTYPE_BASE_HASH:
 
