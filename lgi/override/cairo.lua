@@ -412,6 +412,8 @@ for _, info in ipairs {
       },
    },
 
+   -- RasterSourcePattern (1.12)
+
    {  'Device',
       methods = {
 	 status = { ret = cairo.Status },
@@ -434,6 +436,7 @@ for _, info in ipairs {
       methods = {
 	 create_similar = { ret = { cairo.Surface, xfer = true },
 			    cairo.Content, ti.int, ti.int },
+	 -- create_similar_image (1.12)
 	 create_for_rectangle = { ret = { cairo.Surface, xfer = true },
 				  ti.double, ti.double, ti.double, ti.double },
 	 status = { ret = cairo.Status },
@@ -455,6 +458,8 @@ for _, info in ipairs {
 	 show_page = {},
 	 has_show_text_glyphs = { ret = ti.boolean },
 	 -- set_mime_data, get_mime_data
+	 -- supports_mime_type (1.12)
+	 -- map_to_image, unmap_image (1.12)
 	 write_to_png = { ret = cairo.Status, ti.filename },
       },
 
@@ -545,6 +550,11 @@ for _, info in ipairs {
       },
    },
 
+   -- SurfaceObserver (1.12)
+   -- DeviceObserver (1.12)
+
+   -- Script (1.12, see cairo-script.h)
+
    {  'FontFace',
       methods = {
 	 status = { ret = cairo.Status },
@@ -563,6 +573,8 @@ for _, info in ipairs {
       },
       properties = { 'family', 'slant', 'weight' },
    },
+
+   -- UserFontFace
 
    {  'FontOptions',
       methods = {
