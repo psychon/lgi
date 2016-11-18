@@ -48,6 +48,6 @@ install:
 
 
 script:
-  - make check
+  - make check LUA_CFLAGS="-I$LUAINCLUDE"
     # Just to also check make install
   - sudo make install
