@@ -50,6 +50,12 @@ install:
 
 
 script:
+  # The tests need an enum value that is new in version 2.44. Of course Ubuntu
+  # Ancient (=Trusty) as used by Travis only has version 2.40.0-2 of gio.
+  - sed -e 's/Gio.NetworkConnectivity.LOCAL/1/' -i tests/gobject.lua
+
+  # Build everything and run the tests
   - xvfb-run make check LUA_CFLAGS="-I$LUAINCLUDE"
+
     # Just to also check make install
   - sudo make install
