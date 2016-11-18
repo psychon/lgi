@@ -3,15 +3,13 @@ dist: trusty
 language: c
 env:
   matrix:
-    - LUA=5.2 LUANAME=lua5.2
-    - LUA=5.1 LUANAME=luajit-2.0 LUALIBRARY=/usr/lib/libluajit-5.1.so
+    - LUA=5.1 LUANAME=luajit-2.0
     - LUA=5.1 LUANAME=lua5.1
     - LUA=5.2 LUANAME=lua5.2
-    - LUA=5.3 LUANAME=lua5.3 LUALIBRARY=/usr/lib/liblua.so
+    - LUA=5.3 LUANAME=lua5.3
 
 before_install:
   - if [ -z $LUAINCLUDE ]; then LUAINCLUDE=/usr/include/${LUANAME}; fi
-  - if [ -z $LUALIBRARY ]; then LUALIBRARY=/usr/lib/x86_64-linux-gnu/lib${LUANAME}.so; fi
 
 install:
   # Travis boilerplate: the apt-get cache might be out of date.
@@ -27,7 +25,7 @@ install:
 
   # Install Lua (per env).
   # Note that Lua 5.3 is installed manually, because it is not available in Ubuntu Trusty.
-  # For this we enable LUA_USE_APICHECK to catch more errors.
+  # For this we enable LUA_USE_APICHECK to catch errors in Lua API use.
   # LuaJIT is also installed manually.
   - |
     set -ev
