@@ -47,6 +47,7 @@ function gio.async_access()
    if jit then jit.off() end
 
    local Gio = lgi.Gio
+   local GLib = lgi.GLib
    local res
 
    res = Gio.DBusProxy.async_new
@@ -67,6 +68,16 @@ function gio.async_access()
 							  'NONE')
    end)(file)
    check(res ~= nil)
+
+   local loop = GLib.MainLoop()
+   Gio.Async.start(function(target)
+			   local query = Gio.FILE_ATTRIBUTE_STANDARD_NAME .. "," .. Gio.FILE_ATTRIBUTE_STANDARD_TYPE
+			   local enum, err = target:async_enumerate_children(query, Gio.FileQueryInfoFlags.NONE)
+			   enum:async_next_files(100)
+			   loop:quit()
+			   error("foo")
+   end)(file)
+   loop:run()
 
    local b = Gio.Async.call(function()
 			       return Gio.async_bus_get('SESSION')
