@@ -1135,15 +1135,30 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
 	 expect return values (note that callback_prepare_call already
 	 might have pushed function to be executed to the stack). */
       stacktop = lua_gettop (L);
-
-      /* Store function to be invoked to the stack. */
-      lua_rawgeti (L, LUA_REGISTRYINDEX, closure->target_ref);
     }
   else
     {
       /* Cleanup the stack of the original thread. */
       lua_pop (block->callback.L, 1);
       stacktop = lua_gettop (L);
+    }
+
+  /* If the closure is marked as autodestroy, destroy it.  Note that it is
+     unfortunately not possible to destroy it directly here, because we would
+     delete the code under our feet and crash and burn :-(. Instead, we create
+     marshal guard and leave it to GC to destroy the closure later.  While this
+     function is running, the guard stays on the stack and thus the block stays
+     alive. */
+  if (closure->autodestroy)
+    *lgi_guard_create (L, lgi_closure_destroy) = block;
+
+  if (call)
+    {
+      /* Store function to be invoked to the stack. */
+      lua_rawgeti (L, LUA_REGISTRYINDEX, closure->target_ref);
+    }
+  else
+    {
       if (lua_status (L) == 0)
 	/* Thread is not suspended yet, so it contains initial
 	   function at the top of the stack, so count with it. */
@@ -1245,11 +1260,9 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
 	res = 0;
       else if (res == LUA_ERRRUN && !callable->throws)
 	{
-	  /* If closure is not allowed to return errors and coroutine
-	     finished with error, rethrow the error in the context of
-	     the original thread. */
-	  lua_xmove (L, block->callback.L, 1);
-	  lua_error (block->callback.L);
+	  g_warning("Error raised during callback which is not allowed to throw errors: %s", lua_tostring(L, -1));
+	  /* Ignoring the error is the best that we can do. */
+	  goto out;
 	}
 
       /* If coroutine somehow consumed more than expected(?), do not
@@ -1353,12 +1366,7 @@ closure_callback (ffi_cif *cif, void *ret, void **args, void *closure_arg)
 	*(gboolean *) ret = FALSE;
     }
 
-  /* If the closure is marked as autodestroy, destroy it now.  Note that it is
-     unfortunately not possible to destroy it directly here, because we would
-     delete the code under our feet and crash and burn :-(. Instead, we create
-     marshal guard and leave it to GC to destroy the closure later. */
-  if (closure->autodestroy)
-    *lgi_guard_create (L, lgi_closure_destroy) = block;
+out:
 
   /* This is NOT called by Lua, so we better leave the Lua stack we
      used pretty much tidied. */
