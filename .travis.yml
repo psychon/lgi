@@ -4,9 +4,6 @@ language: c
 env:
   matrix:
     - LUA=5.1 LUANAME=luajit-2.0
-    - LUA=5.1 LUANAME=lua5.1
-    - LUA=5.2 LUANAME=lua5.2
-    - LUA=5.3 LUANAME=lua5.3
 
 before_install:
   - if [ -z $LUAINCLUDE ]; then LUAINCLUDE=/usr/include/${LUANAME}; fi
@@ -46,6 +43,8 @@ install:
       sudo apt-get install -y lib${LUANAME}-dev ${LUANAME}
     fi
 
+  - travis_retry sudo pip install meson
+
 
 script:
   # The tests need an enum value that is new in version 2.44. Of course Ubuntu
@@ -53,8 +52,10 @@ script:
   - sed -e 's/Gio.NetworkConnectivity.LOCAL/1/' -i tests/gobject.lua
 
   # Build everything and run the tests
-  - xvfb-run -a make check LUA_CFLAGS="-I$LUAINCLUDE"
+  - mkdir build
+  - (cd build && meson ..)
+  - (cd build && xvfb-run -a ninja test)
 
   # Just to also check make install
-  - sudo make install LUA_VERSION="$LUA"
+  - sudo ninja install
   - xvfb-run -a lua -e 'Gtk = require("lgi").Gtk  c = Gtk.Grid()  w = Gtk.Label()  c:add(w)  assert(w.parent == c)  a, b = dofile("lgi/version.lua"), require("lgi.version")  assert(a == b, string.format("%s == %s", a, b))'
