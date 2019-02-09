@@ -5,41 +5,25 @@
 # License: MIT
 #
 
-PREFIX = /usr/local
-HOST_OS = $(shell uname -s | tr A-Z a-z)
-LUA_VERSION=5.1
-LUA_LIBDIR = $(PREFIX)/lib/lua/$(LUA_VERSION)
-LUA_SHAREDIR = $(PREFIX)/share/lua/$(LUA_VERSION)
+include ../Makefile.inc
 
-PKG_CONFIG = pkg-config
 GINAME = gobject-introspection-1.0
 PKGS = $(GINAME) gmodule-2.0 libffi
 VERSION_FILE = version.lua
 
 ifneq ($(filter cygwin% msys% mingw%, $(HOST_OS)),)
 CORE = corelgilua51.dll
-LIBFLAG = -shared
-LIBS += -llua
 else
 ifeq ($(HOST_OS),darwin)
 CORE = corelgilua51.so
-LIBFLAG = -bundle -undefined dynamic_lookup
-CCSHARED = -fno-common
 GOBJECT_INTROSPECTION_LIBDIR = $(shell $(PKG_CONFIG) --variable=libdir $(GINAME))
 else
 CORE = corelgilua51.so
-LIBFLAG = -shared
-CCSHARED = -fPIC
 endif
 endif
 
 OBJS = buffer.o callable.o core.o gi.o marshal.o object.o record.o
 
-ifndef CFLAGS
-ifndef COPTFLAGS
-CFLAGS = -Wall -Wextra -O2 -g
-endif
-endif
 ifeq ($(HOST_OS),darwin)
 CFLAGS += -DGOBJECT_INTROSPECTION_LIBDIR=\"$(GOBJECT_INTROSPECTION_LIBDIR)\"
 endif

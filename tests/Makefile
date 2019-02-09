@@ -5,35 +5,10 @@
 # License: MIT
 #
 
-HOST_OS = $(shell uname -s | tr A-Z a-z)
-
-ifneq ($(filter cygwin% msys% mingw%, $(HOST_OS)),)
-EXT = .dll
-PFX = cyg
-LIBFLAG = -shared
-else
-ifeq ($(HOST_OS),darwin)
-EXT = .so
-PFX = lib
-LIBFLAG = -bundle -undefined dynamic_lookup
-CCSHARED = -fno-common
-else
-EXT = .so
-PFX = lib
-LIBFLAG = -shared
-CCSHARED = -fPIC
-endif
-endif
+include ../Makefile.inc
 
 PKGS = gio-2.0 cairo cairo-gobject gobject-introspection-1.0 gmodule-2.0 libffi
-LUA = lua
-PKG_CONFIG = pkg-config
 
-ifndef CFLAGS
-ifndef COPTFLAGS
-CFLAGS = -Wall -g
-endif
-endif
 ALL_CFLAGS = $(CCSHARED) $(COPTFLAGS) $(LUA_CFLAGS) $(shell $(PKG_CONFIG) --cflags $(PKGS)) $(CFLAGS) -I .
 LIBS += $(shell $(PKG_CONFIG) --libs $(PKGS))
 ALL_LDFLAGS = $(LIBFLAG) $(LDFLAGS)
