@@ -3,10 +3,6 @@ dist: trusty
 language: c
 env:
   matrix:
-    - LUA=5.1 LUANAME=luajit-2.0 LUA_LIB=-lluajit-5.1
-    - LUA=5.1 LUANAME=lua5.1
-    - LUA=5.2 LUANAME=lua5.2
-    - LUA=5.3 LUANAME=lua5.3 LUA_LIB=-llua
     - LUA=5.4 LUANAME=lua5.4 LUA_LIB=-llua
 
 before_install:
@@ -39,7 +35,7 @@ install:
         && cd .. \
         && sudo make INSTALL_TOP=/usr/ INSTALL_INC=${LUAINCLUDE} TO_LIB=liblua.so linux install)
     elif [[ "$LUA" == "5.4" ]]; then
-      travis_retry wget https://www.lua.org/work/lua-5.4.0-work2.tar.gz -O lua.tar.gz
+      travis_retry wget https://www.lua.org/work/lua-5.4.1-rc1.tar.gz -O lua.tar.gz
       tar -xvzf lua.tar.gz
       (cd lua-5.4.0-work2/src \
         && make SYSCFLAGS="-DLUA_USE_LINUX -ULUA_COMPAT_5_2 -DLUA_USE_APICHECK" SYSLIBS="-Wl,-E -ldl -lreadline" LUA_A=liblua.so MYCFLAGS="-fPIC" RANLIB=: AR="gcc -shared -ldl -o" liblua.so \
